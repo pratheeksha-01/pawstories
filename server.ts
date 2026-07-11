@@ -90,8 +90,10 @@ function logEnvDebug() {
     logLevel: (process.env.LOG_LEVEL as LogLevel) || "info",
     firebaseProjectId: process.env.FIREBASE_PROJECT_ID || "<missing — auth/quota enforcement will fail>",
     firebaseServiceAccount: process.env.FIREBASE_SERVICE_ACCOUNT_PATH
-      ? "dedicated key configured"
-      : "falling back to GOOGLE_APPLICATION_CREDENTIALS — verify it has Firestore IAM on the Firebase project, or quota checks will fail",
+      ? "dedicated key file configured (local-dev pattern)"
+      : process.env.GOOGLE_APPLICATION_CREDENTIALS
+        ? "falling back to GOOGLE_APPLICATION_CREDENTIALS — verify that file exists here and has Firestore IAM"
+        : "no key file configured — expecting an attached Cloud Run service account with Firestore IAM (production pattern)",
   });
 }
 
@@ -100,6 +102,20 @@ logEnvDebug();
 function getGeminiClient() {
   if (aiClient) {
     return aiClient;
+  }
+
+  // Same footgun as FIREBASE_SERVICE_ACCOUNT_PATH: this points at a real file for local
+  // dev, but if it gets copied into Cloud Run's runtime env vars, the (gitignored) key
+  // file was never in the deployed container, and the underlying auth library's ENOENT
+  // is not obviously actionable. On Cloud Run, don't set this — attach the service
+  // account to the service instead (Security tab); ADC resolves it via the metadata server.
+  const credsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (credsPath && !fs.existsSync(credsPath)) {
+    throw new Error(
+      `GOOGLE_APPLICATION_CREDENTIALS is set to "${credsPath}" but that file doesn't exist here. ` +
+      `If this is Cloud Run: don't set this var there — delete it from Variables & Secrets and instead ` +
+      `attach the service account directly (Security tab). See docs/GCP_SETUP.md Step 11.`
+    );
   }
 
   const projectId = getConfiguredProjectId();
@@ -139,6 +155,19 @@ function getFirebaseAdmin() {
   }
 
   const dedicatedKeyPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+  if (dedicatedKeyPath && !fs.existsSync(dedicatedKeyPath)) {
+    // The #1 way this breaks in production: FIREBASE_SERVICE_ACCOUNT_PATH gets copied
+    // from a local .env into Cloud Run's runtime env vars, but the key file itself is
+    // (rightly) gitignored, so it never made it into the deployed container. On Cloud
+    // Run, don't set this var at all — remove it and attach the service account to the
+    // service directly (Security tab); applicationDefault() then resolves it via the
+    // metadata server with no key file needed. This var is for local dev only.
+    throw new Error(
+      `FIREBASE_SERVICE_ACCOUNT_PATH is set to "${dedicatedKeyPath}" but that file doesn't exist here. ` +
+      `If this is Cloud Run: don't set this var there — delete it from Variables & Secrets and instead ` +
+      `attach the service account directly (Security tab). See docs/GCP_SETUP.md Step 11.`
+    );
+  }
   const credential = dedicatedKeyPath
     ? admin.credential.cert(JSON.parse(fs.readFileSync(dedicatedKeyPath, 'utf-8')))
     : admin.credential.applicationDefault();
