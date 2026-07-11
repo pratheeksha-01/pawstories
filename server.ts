@@ -995,7 +995,7 @@ async function bootstrap() {
     });
   }
 
-  app.listen(PORT, "127.0.0.1", () => {
+  app.listen(PORT, () => {
     log("info", "server.listening", { port: PORT, mode: process.env.NODE_ENV || "development" });
   });
 }
