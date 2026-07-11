@@ -1,0 +1,21 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+# Safe to commit — see comment at the top of the file itself: only the
+# non-secret VITE_FIREBASE_* client config belongs here, nothing server-side.
+!.env.production
+
+# GCP service account keys / credentials — never commit these
+service-account.json
+service-account*.json
+*-service-account.json
+*.pem
+*.key
+
+firebase-applet-config.json
+pawstories-service.json

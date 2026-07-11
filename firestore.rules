@@ -1,0 +1,64 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Support Helper Functions
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+    
+    function isSignedIn() { 
+      return request.auth != null; 
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Validation Schema Helpers for User Profiles
+    function isValidUser(data) {
+      return data.email is string && data.email.size() <= 256
+        && data.displayName is string && data.displayName.size() <= 100
+        && data.generationCount is int
+        && (!('lastGenerationMonth' in data) || data.lastGenerationMonth is string && data.lastGenerationMonth.size() <= 7)
+        && (!('requestedAmount' in data) || data.requestedAmount is int)
+        && (!('requestStatus' in data) || data.requestStatus is string && data.requestStatus.size() <= 50);
+    }
+
+    match /users/{userId} {
+      // Must target valid IDs
+      allow get: if isSignedIn() && isValidId(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      // generationCount / lastGenerationMonth / displayName / email are NOT in this
+      // list — they're owned exclusively by the server (Firebase Admin SDK, which
+      // bypasses these rules entirely) via server.ts's checkAndIncrementQuota().
+      // Previously generationCount had no value restriction here, which let any
+      // signed-in user reset their own quota straight from devtools by writing to
+      // Firestore directly. Only the quota-REQUEST fields remain client-writable.
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && (
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['requestedAmount', 'requestStatus'])
+      );
+    }
+
+    // Validation Schema Helpers for Ticket Requests
+    function isValidRequest(data) {
+      return data.userId is string && data.userId.size() <= 128
+        && data.email is string && data.email.size() <= 256
+        && data.requestedQuantity is int
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && (!('status' in data) || data.status is string && data.status.size() <= 32);
+    }
+
+    match /requests/{requestId} {
+      // Read access strictly bounded to owner
+      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      // Allow creation when the creator field matches sender UID
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid && isValidRequest(request.resource.data);
+    }
+  }
+}
