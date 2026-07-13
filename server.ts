@@ -513,7 +513,14 @@ function ensureValidImagePayload(base64Data: string, mimeType?: string) {
   if (Buffer.byteLength(base64Data, 'base64') > MAX_INPUT_BYTES) {
     throw new Error('Image payload is too large. Please use a smaller photo.');
   }
-  return mimeType && typeof mimeType === 'string' ? mimeType : 'image/jpeg';
+  if (!mimeType || typeof mimeType !== 'string') {
+    return 'image/jpeg';
+  }
+  const normalizedMimeType = mimeType.toLowerCase().trim();
+  if (!normalizedMimeType.startsWith('image/')) {
+    throw new Error('NOT A PHOTO: Please upload an image of your pet.');
+  }
+  return normalizedMimeType;
 }
 
 function extractTextFromResponse(response: any): string | null {
@@ -572,9 +579,15 @@ app.post("/api/analyze-pet", async (req, res) => {
     const { base64Data, mimeType, analysisPrompt, language } = req.body;
     const normalizedMimeType = ensureValidImagePayload(base64Data, mimeType);
     const inputBytes = Buffer.byteLength(base64Data, 'base64');
-    log("info", "analyze.received", { reqId, mimeType: normalizedMimeType, inputBytes, promptChars: (analysisPrompt || '').length });
+    const normalizedAnalysisPrompt = typeof analysisPrompt === 'string' && analysisPrompt.trim()
+      ? analysisPrompt
+      : `You are a strict pet-photo moderator and satirical spy analyst.
+STEP 1 — SAFETY CHECK (do this before anything else, it overrides every other instruction): look at the image and decide whether its MAIN SUBJECT is a real animal/pet (dog, cat, bird, hamster, rabbit, reptile, fish, horse, guinea pig, ferret, turtle, lizard, farm animal, or other household pet) or not. Return the rejection below if the main subject is a human being — a selfie, a portrait, a person's face or body, a group photo of people — or if there is no clear animal subject at all. A human hand, arm, leg, or person incidentally holding, petting, or standing near the animal is fine and still counts as valid, AS LONG AS an animal is the clear main subject of the photo. If the image fails this check, respond with EXACTLY this JSON and nothing else: {"errorType":"HUMAN_OR_INVALID"}
+STEP 2 — Only if STEP 1 passed, return only one compact JSON object in "${typeof language === 'string' && language ? language : 'English'}" with exactly these 10 keys: identity, codeId, vibe, opHub, desc, talent, nemesis, zoomies, heist, imagePrompt. Use short values. desc must be one short sentence under 110 chars. imagePrompt must be a vivid one-sentence English description of THIS pet dressed as a secret agent — name a specific spy costume, a signature prop/gadget, and a themed scene that matches opHub.
+Never skip STEP 1. Do not add comments, markdown, or extra text.`;
+    log("info", "analyze.received", { reqId, mimeType: normalizedMimeType, inputBytes, promptChars: normalizedAnalysisPrompt.length });
 
-    const cacheKey = getCacheKey('analyze', base64Data, analysisPrompt || '');
+    const cacheKey = getCacheKey('analyze', base64Data, normalizedAnalysisPrompt);
     const cachedResponse = getCachedResponse(cacheKey);
     if (cachedResponse) {
       log("info", "analyze.cache_hit", { reqId, latencyMs: Date.now() - startedAt });
@@ -605,7 +618,7 @@ app.post("/api/analyze-pet", async (req, res) => {
             role: "user",
             parts: [
               { inlineData: { data: base64Data, mimeType: normalizedMimeType } },
-              { text: analysisPrompt }
+              { text: normalizedAnalysisPrompt }
             ]
           }
         ],
