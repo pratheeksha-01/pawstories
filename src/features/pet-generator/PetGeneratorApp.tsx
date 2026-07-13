@@ -72,9 +72,9 @@ const PREVIEW_MAX_DIM = 384;
 const PREVIEW_QUALITY = 0.55;
 
 function shrinkBase64Image(base64: string, maxDim = 400, quality = 0.6): Promise<string> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (!base64 || !base64.startsWith('data:image')) {
-      resolve(base64);
+      reject(new Error('INVALID PHOTO: Please select a valid pet image.'));
       return;
     }
     const img = new Image();
@@ -83,6 +83,10 @@ function shrinkBase64Image(base64: string, maxDim = 400, quality = 0.6): Promise
         const canvas = document.createElement('canvas');
         let w = img.width;
         let h = img.height;
+        if (!w || !h) {
+          reject(new Error('INVALID PHOTO: Please upload a non-empty pet image.'));
+          return;
+        }
         if (w > h) {
           if (w > maxDim) {
             h = Math.round((h * maxDim) / w);
@@ -97,19 +101,25 @@ function shrinkBase64Image(base64: string, maxDim = 400, quality = 0.6): Promise
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, w, h);
-          resolve(canvas.toDataURL('image/jpeg', quality));
-        } else {
-          resolve(base64);
+        if (!ctx) {
+          reject(new Error('Failed to process image. Please try another photo.'));
+          return;
         }
+        if (base64.startsWith('data:image/jpeg') || base64.startsWith('data:image/jpg')) {
+          ctx.drawImage(img, 0, 0, w, h);
+        } else {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+        }
+        resolve(canvas.toDataURL('image/jpeg', quality));
       } catch (err) {
-        console.warn("Failed to shrink image, using fallback", err);
-        resolve(base64);
+        console.warn("Failed to shrink image", err);
+        reject(new Error('Failed to process image format. Please try another photo.'));
       }
     };
     img.onerror = () => {
-      resolve(base64);
+      reject(new Error('INVALID PHOTO: Please upload a supported pet image.'));
     };
     img.src = base64;
   });
@@ -532,8 +542,10 @@ export default function App() {
     }
     let f = e.target.files?.[0];
     if (f) {
-      const isHeic = f.name.toLowerCase().endsWith('.heic') || f.name.toLowerCase().endsWith('.heif') || f.type === 'image/heic' || f.type === 'image/heif';
-      if (!f.type.startsWith('image/') && !isHeic) {
+      const fileName = f.name.toLowerCase();
+      const isHeic = fileName.endsWith('.heic') || fileName.endsWith('.heif') || f.type === 'image/heic' || f.type === 'image/heif';
+      const isSvg = fileName.endsWith('.svg') || f.type === 'image/svg+xml';
+      if ((!f.type || !f.type.startsWith('image/')) && !isHeic && !isSvg) {
         setBureauError('INVALID PHOTO: Please select a valid image file.');
         return;
       }
@@ -541,40 +553,58 @@ export default function App() {
         setBureauError('FILE TOO LARGE: Max file size is 15MB.');
         return;
       }
-      
-      if (isHeic) {
-        try {
-          setIsAnalyzing(true);
-          setStatus('Optimizing photo format...');
-          const converted = (await (await import('heic2any')).default)({ blob: f, toType: 'image/jpeg', quality: 0.6 });
+
+      try {
+        setIsAnalyzing(true);
+        setIsGeneratingImage(false);
+        setStatus('Optimizing photo format...');
+
+        if (isHeic) {
+          const converted = (await (await import('heic2any')).default)({ blob: f, toType: 'image/jpeg', quality: 0.85 });
           f = new File([Array.isArray(converted) ? converted[0] : converted], f.name.replace(/.heic$|.heif$/i, '.jpg'), { type: 'image/jpeg' });
+        }
+
+        const normalizedFile = await new Promise<File>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onerror = () => reject(new Error('Failed to read image file.'));
+          reader.onloadend = async () => {
+            try {
+              const base64Result = reader.result as string;
+              const normalizedBase64 = await shrinkBase64Image(base64Result, PREVIEW_MAX_DIM, PREVIEW_QUALITY);
+              const response = await fetch(normalizedBase64);
+              const blob = await response.blob();
+              resolve(new File([blob], f.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' }));
+            } catch (error) {
+              reject(error instanceof Error ? error : new Error('Failed to process image format.'));
+            }
+          };
+          reader.readAsDataURL(f);
+        });
+
+        setFile(normalizedFile);
+        const normalizedReader = new FileReader();
+        normalizedReader.onloadend = () => {
+          setPreview(normalizedReader.result as string);
+          setHasNewPhoto(true);
+          setBureauError(null);
+          setResult(null);
+          setGenImage(null);
           setIsAnalyzing(false);
-          setIsGeneratingImage(false);
           setStatus('');
-        } catch (err) {
-          console.error("HEIC conversion error:", err);
+        };
+        normalizedReader.onerror = () => {
           setIsAnalyzing(false);
-          setIsGeneratingImage(false);
           setStatus('');
           setBureauError('Failed to process image format. Please try another photo.');
-          return;
-        }
+        };
+        normalizedReader.readAsDataURL(normalizedFile);
+      } catch (err) {
+        console.error('Image conversion error:', err);
+        setIsAnalyzing(false);
+        setStatus('');
+        setBureauError(err instanceof Error ? err.message : 'Failed to process image format. Please try another photo.');
+        return;
       }
-
-      setFile(f);
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        let base64Result = reader.result as string;
-        // Optimize immediately before setting state to dramatically reduce payload size and AI tokens
-        base64Result = await shrinkBase64Image(base64Result, PREVIEW_MAX_DIM, PREVIEW_QUALITY);
-        setPreview(base64Result);
-        setHasNewPhoto(true);
-        setBureauError(null);
-      };
-      reader.readAsDataURL(f);
-      
-      setResult(null);
-      setGenImage(null);
     }
   };
 
@@ -691,7 +721,7 @@ export default function App() {
       if (!preview) return;
       const base64Data = preview.split(',')[1];
       if (!base64Data) throw new Error('Invalid image data. Please try another photo.');
-      const mimeType = file?.type || "image/jpeg";
+      const mimeType = 'image/jpeg';
 
       // Cheap satirical analysis + human/invalid gate. The expensive image portrait
       // is now opt-in (see generateSpyImage), so we no longer pay for image
@@ -831,7 +861,7 @@ Never skip STEP 1. Do not add comments, markdown, or extra text.`;
       setBureauError('Invalid image data. Please try another photo.');
       return;
     }
-    const mimeType = file?.type || 'image/jpeg';
+    const mimeType = 'image/jpeg';
 
     setBureauError(null);
     setIsGeneratingImage(true);
