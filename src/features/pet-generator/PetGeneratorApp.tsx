@@ -68,6 +68,28 @@ interface SavedGeneration {
   };
 }
 
+function isSavedGeneration(value: unknown): value is SavedGeneration {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as SavedGeneration;
+  const result = candidate.result;
+  return typeof candidate.id === 'string'
+    && typeof candidate.name === 'string'
+    && typeof candidate.preview === 'string'
+    && (candidate.genImage === null || typeof candidate.genImage === 'string')
+    && typeof candidate.language === 'string'
+    && !!result
+    && typeof result === 'object'
+    && typeof result.identity === 'string'
+    && typeof result.talent === 'string'
+    && typeof result.zoomies === 'string'
+    && typeof result.heist === 'string'
+    && typeof result.nemesis === 'string'
+    && typeof result.vibe === 'string'
+    && typeof result.opHub === 'string'
+    && typeof result.desc === 'string'
+    && typeof result.codeId === 'string';
+}
+
 const PREVIEW_MAX_DIM = 384;
 const PREVIEW_QUALITY = 0.55;
 
@@ -329,7 +351,7 @@ export default function App() {
         const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
 
         const valid = parsed.filter((gen): gen is SavedGeneration => {
-          if (!gen || typeof gen !== 'object') return false;
+          if (!isSavedGeneration(gen)) return false;
           const timestamp = typeof gen.timestamp === 'number' ? gen.timestamp : now;
           return now - timestamp <= sevenDaysMs;
         });

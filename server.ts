@@ -1012,8 +1012,16 @@ async function bootstrap() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
+    app.use(express.static(distPath, { index: false }));
+    app.get("*", (req, res, next) => {
+      if (req.path.startsWith('/api/')) {
+        next();
+        return;
+      }
+      if (path.extname(req.path)) {
+        res.sendStatus(404);
+        return;
+      }
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
