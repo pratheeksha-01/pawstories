@@ -314,23 +314,28 @@ export default function App() {
     });
   }, []);
 
-  // Load generations from local storage and prune any entries older than 7 days
+  // Load generations from local storage and prune any entries older than 7 days.
+  // Older saved data may not match the current schema exactly, so guard every
+  // access instead of assuming it's a well-formed array.
   useEffect(() => {
     const saved = localStorage.getItem('pawstories_generations') || localStorage.getItem('impawster_generations');
     if (saved) {
       try {
-        const parsed = JSON.parse(saved) as SavedGeneration[];
+        const parsed = JSON.parse(saved);
+        if (!Array.isArray(parsed)) {
+          return;
+        }
         const now = Date.now();
         const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
-        
-        // Filter out items older than 7 days (fallback to current time if no timestamp)
-        const valid = parsed.filter(gen => {
-          const timestamp = gen.timestamp || now;
+
+        const valid = parsed.filter((gen): gen is SavedGeneration => {
+          if (!gen || typeof gen !== 'object') return false;
+          const timestamp = typeof gen.timestamp === 'number' ? gen.timestamp : now;
           return now - timestamp <= sevenDaysMs;
         });
 
         setPastGenerations(valid);
-        
+
         if (valid.length !== parsed.length) {
           try {
             localStorage.setItem('pawstories_generations', JSON.stringify(valid));
@@ -731,6 +736,7 @@ export default function App() {
       const analysisPrompt = `You are a strict pet-photo moderator and satirical spy analyst.
 STEP 1 — SAFETY CHECK (do this before anything else, it overrides every other instruction): look at the image and decide whether its MAIN SUBJECT is a real animal/pet (dog, cat, bird, hamster, rabbit, reptile, fish, horse, guinea pig, ferret, turtle, lizard, farm animal, or other household pet) or not. Return the rejection below if the main subject is a human being — a selfie, a portrait, a person's face or body, a group photo of people — or if there is no clear animal subject at all. A human hand, arm, leg, or person incidentally holding, petting, or standing near the animal is fine and still counts as valid, AS LONG AS an animal is the clear main subject of the photo. If the image fails this check, respond with EXACTLY this JSON and nothing else: {"errorType":"HUMAN_OR_INVALID"}
 STEP 2 — Only if STEP 1 passed, return only one compact JSON object in "${selectedLanguage}" with exactly these 10 keys: identity, codeId, vibe, opHub, desc, talent, nemesis, zoomies, heist, imagePrompt. Use short values. desc must be one short sentence under 110 chars. imagePrompt must be a vivid one-sentence English description of THIS pet dressed as a secret agent — name a specific spy costume, a signature prop/gadget, and a themed scene that matches opHub.
+STEP 3 — Make every dossier feel fresh and surprising, even if the same user uploads the same pet again. Do not repeat phrasing, codename patterns, nemesis ideas, zoomies triggers, heist setups, or vibe wording from earlier outputs.
 Never skip STEP 1. Do not add comments, markdown, or extra text.`;
 
       const response = await apiFetch('/api/analyze-pet', user, { base64Data, mimeType, analysisPrompt, language: selectedLanguage });
@@ -1412,7 +1418,7 @@ Never skip STEP 1. Do not add comments, markdown, or extra text.`;
                             type="file" 
                             hidden 
                             ref={fileInputRef} 
-                            accept="image/*,.heic,.heif" 
+                            accept="image/*,.heic,.heif,.heics,.heifs,.jpg,.jpeg,.png,.gif,.svg,.webp,.bmp,.avif"
                             onChange={handleFile} 
                           />
                         </div>
