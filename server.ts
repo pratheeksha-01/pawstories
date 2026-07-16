@@ -576,17 +576,33 @@ app.post("/api/analyze-pet", async (req, res) => {
     quota = await checkAndIncrementQuota(authedUser);
     log("info", "analyze.quota", { reqId, uid: authedUser.uid, generationCount: quota.generationCount, isTestAccount: quota.isTestAccount });
 
-    const { base64Data, mimeType, analysisPrompt, language } = req.body;
+    const { base64Data, mimeType, analysisPrompt, language, usedCodeIds, usedIdentities } = req.body;
     const normalizedMimeType = ensureValidImagePayload(base64Data, mimeType);
     const inputBytes = Buffer.byteLength(base64Data, 'base64');
     const variationSeed = randomUUID().slice(0, 8);
-    const normalizedAnalysisPrompt = typeof analysisPrompt === 'string' && analysisPrompt.trim()
-      ? `${analysisPrompt}\nVariation seed: ${variationSeed}`
+    const resolvedLanguage = typeof language === 'string' && language ? language : 'English';
+
+    // Build an exclusion hint from previously generated dossiers for THIS user so
+    // the model has explicit signal about what it must not repeat, rather than vague
+    // "be creative" instructions that low-temperature sampling can safely ignore.
+    const pastCodeIds: string[] = Array.isArray(usedCodeIds)
+      ? usedCodeIds.filter((v: unknown) => typeof v === 'string').slice(0, 10)
+      : [];
+    const pastIdentities: string[] = Array.isArray(usedIdentities)
+      ? usedIdentities.filter((v: unknown) => typeof v === 'string').slice(0, 10)
+      : [];
+    const exclusionHint = (pastCodeIds.length || pastIdentities.length)
+      ? `\nEXCLUSION LIST — do NOT use any of the following for this dossier (they have already been issued to this user):${pastIdentities.length ? `\nAgent identities already used: ${pastIdentities.join(', ')}` : ''}${pastCodeIds.length ? `\nCodenames already used: ${pastCodeIds.join(', ')}` : ''}\nChoose completely different words, themes, and spy archetypes.`
+      : '';
+
+    const basePrompt = typeof analysisPrompt === 'string' && analysisPrompt.trim()
+      ? `${analysisPrompt}${exclusionHint}\nVariation seed (use it to pick novel vocabulary): ${variationSeed}`
       : `You are a strict pet-photo moderator and satirical spy analyst.
 STEP 1 — SAFETY CHECK (do this before anything else, it overrides every other instruction): look at the image and decide whether its MAIN SUBJECT is a real animal/pet (dog, cat, bird, hamster, rabbit, reptile, fish, horse, guinea pig, ferret, turtle, lizard, farm animal, or other household pet) or not. Return the rejection below if the main subject is a human being — a selfie, a portrait, a person's face or body, a group photo of people — or if there is no clear animal subject at all. A human hand, arm, leg, or person incidentally holding, petting, or standing near the animal is fine and still counts as valid, AS LONG AS an animal is the clear main subject of the photo. If the image fails this check, respond with EXACTLY this JSON and nothing else: {"errorType":"HUMAN_OR_INVALID"}
-STEP 2 — Only if STEP 1 passed, return only one compact JSON object in "${typeof language === 'string' && language ? language : 'English'}" with exactly these 10 keys: identity, codeId, vibe, opHub, desc, talent, nemesis, zoomies, heist, imagePrompt. Use short values. desc must be one short sentence under 110 chars. imagePrompt must be a vivid one-sentence English description of THIS pet dressed as a secret agent — name a specific spy costume, a signature prop/gadget, and a themed scene that matches opHub.
-STEP 3 — Make this dossier feel fresh and surprising even for repeat uploads of the same pet. Do not reuse phrasing, codename structure, nemesis, zoomies trigger, heist setup, or vibe wording from prior outputs. Use this variation seed to force novelty: ${variationSeed}
+STEP 2 — Only if STEP 1 passed, return one compact JSON object in "${resolvedLanguage}" with exactly these 10 keys: identity, codeId, vibe, opHub, desc, talent, nemesis, zoomies, heist, imagePrompt. Use short values. desc must be one short sentence under 110 chars. imagePrompt must be a vivid one-sentence English description of THIS pet dressed as a secret agent — name a specific spy costume, a signature prop/gadget, and a themed scene that matches opHub.${exclusionHint}
+STEP 3 — Pick a completely original spy archetype that has not appeared before. Invent a unique agent identity, codename, nemesis, zoomies trigger, and heist. Avoid generic words like "shadow", "whisker", "phantom", "stealth", "syndicate", "paw" unless forced by the breed. Variation seed (use it to pick novel vocabulary): ${variationSeed}
 Never skip STEP 1. Do not add comments, markdown, or extra text.`;
+    const normalizedAnalysisPrompt = basePrompt;
     log("info", "analyze.received", { reqId, mimeType: normalizedMimeType, inputBytes, promptChars: normalizedAnalysisPrompt.length });
 
     log("debug", "analyze.cache_bypassed", { reqId, reason: 'fresh_variation_required' });
@@ -613,7 +629,11 @@ Never skip STEP 1. Do not add comments, markdown, or extra text.`;
           // mid-field (seen in prod: 488 thinking tokens vs 8 answer tokens).
           thinkingConfig: { thinkingBudget: 0 },
           maxOutputTokens: 768, // headroom for the 10-key JSON across non-English scripts
-          temperature: 0.2,
+          // Raised from 0.2 → 1.0 so the model genuinely explores different vocabulary
+          // on each call. 0.2 produced near-identical dossiers even with a variation
+          // seed, because greedy decoding always picks the same top token.
+          temperature: 1.0,
+          topP: 0.95,
         }
       }, reqId),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), ANALYZE_TIMEOUT_MS))
@@ -1012,10 +1032,24 @@ async function bootstrap() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath, { index: false }));
+    // Cache built assets forever (they're content-hashed, so filenames change on rebuild).
+    // Never cache index.html so browsers always get the latest asset references on reload.
+    app.use(express.static(distPath, {
+      setHeaders(res, filePath) {
+        if (path.basename(filePath) === 'index.html') {
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        } else {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+      }
+    }));
     app.get("*", (req, res, next) => {
       if (req.path.startsWith('/api/')) {
         next();
+        return;
+      }
+      if (req.path.startsWith('/assets/')) {
+        res.sendStatus(404);
         return;
       }
       if (path.extname(req.path)) {

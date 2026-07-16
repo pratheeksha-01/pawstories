@@ -761,7 +761,15 @@ STEP 2 — Only if STEP 1 passed, return only one compact JSON object in "${sele
 STEP 3 — Make every dossier feel fresh and surprising, even if the same user uploads the same pet again. Do not repeat phrasing, codename patterns, nemesis ideas, zoomies triggers, heist setups, or vibe wording from earlier outputs.
 Never skip STEP 1. Do not add comments, markdown, or extra text.`;
 
-      const response = await apiFetch('/api/analyze-pet', user, { base64Data, mimeType, analysisPrompt, language: selectedLanguage });
+      const recentUserGenerations = pastGenerations.slice(0, 10);
+      const response = await apiFetch('/api/analyze-pet', user, {
+        base64Data,
+        mimeType,
+        analysisPrompt,
+        language: selectedLanguage,
+        usedCodeIds: recentUserGenerations.map((gen: SavedGeneration) => gen.result.codeId).filter(Boolean),
+        usedIdentities: recentUserGenerations.map((gen: SavedGeneration) => gen.result.identity).filter(Boolean)
+      });
       const analysisResponse = await response.json();
 
       if (!response.ok) {
